@@ -54,12 +54,22 @@ module_param(timeout, int, 0);
 /*
  * Do we run in NAPI mode?
  */
+/*
+ * 是否需要运行NAPI模式
+ */
 static int use_napi = 0;
 module_param(use_napi, int, 0);
 
 
 /*
  * A structure representing an in-flight packet.
+ */
+/*
+ * snull_packet结构为内存中的即时数据包
+ * next: 单向链表
+ * dev: 相关的网络设备
+ * datalen: 数据包长度
+ * data: 以太网帧最大长度1500字节的字节数组
  */
 struct snull_packet {
 	struct snull_packet *next;
@@ -95,6 +105,9 @@ static void (*snull_interrupt)(int, void *, struct pt_regs *);
 
 /*
  * Set up a device's packet pool.
+ */
+/*
+ * 创建一个每设备相关的数据包池
  */
 void snull_setup_pool(struct net_device *dev)
 {
@@ -189,6 +202,9 @@ struct snull_packet *snull_dequeue_buf(struct net_device *dev)
 /*
  * Enable and disable receive interrupts.
  */
+/*
+ * 启用/禁用接收中断
+ */
 static void snull_rx_ints(struct net_device *dev, int enable)
 {
 	struct snull_priv *priv = netdev_priv(dev);
@@ -260,6 +276,11 @@ void snull_rx(struct net_device *dev, struct snull_packet *pkt)
 	 * The packet has been retrieved from the transmission
 	 * medium. Build an skb around it, so upper layers can handle it
 	 */
+    /*
+     * 数据包已经从传输介质中获取。
+     * 创建一个skb，并将数据包中的数据复制到skb
+     * 这样上层才可以处理
+     */
 	skb = dev_alloc_skb(pkt->datalen + 2);
 	if (!skb) {
 		if (printk_ratelimit())
@@ -507,14 +528,20 @@ static void snull_hw_tx(char *buf, int len, struct net_device *dev)
 /*
  * Transmit a packet (called by the kernel)
  */
+/*
+ * 发送数据包(由内核调用)
+ */
 int snull_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	int len;
-	char *data, shortpkt[ETH_ZLEN];
+	char *data, shortpkt[ETH_ZLEN]; // ETH_ZLEN是以太网帧的最小长度
 	struct snull_priv *priv = netdev_priv(dev);
 	
+    // 获取sbk的数据
 	data = skb->data;
 	len = skb->len;
+    // 如果skb长度小于以太网帧最小长度
+    // 则将skb的数据拷贝到最小以太网帧shortpkt
 	if (len < ETH_ZLEN) {
 		memset(shortpkt, 0, ETH_ZLEN);
 		memcpy(shortpkt, skb->data, skb->len);
@@ -524,9 +551,11 @@ int snull_tx(struct sk_buff *skb, struct net_device *dev)
 	dev->trans_start = jiffies; /* save the timestamp */
 
 	/* Remember the skb, so we can free it at interrupt time */
+    // 保存此sbk，当发送动作结束并且触发发送中断时，释放此sbk
 	priv->skb = skb;
 
 	/* actual deliver of data is device-specific, and not shown here */
+    // 发送到对应的设备
 	snull_hw_tx(data, len, dev);
 
 	return 0; /* Our simple device can not fail */
@@ -629,6 +658,10 @@ static const struct header_ops snull_header_ops = {
  * The init function (sometimes called probe).
  * It is invoked by register_netdev()
  */
+/*
+ * 初始化函数，有时也叫做probe
+ * 它被regiser_netdev函数调用
+ */
 void snull_init(struct net_device *dev)
 {
 	struct snull_priv *priv;
@@ -637,6 +670,10 @@ void snull_init(struct net_device *dev)
 	 * Then, initialize the priv field. This encloses the statistics
 	 * and a few private fields.
 	 */
+    /*
+     * 初始化私有数据结构字段
+     * 包括统计字段和一些私有字段
+     */
 	priv = netdev_priv(dev);
 	memset(priv, 0, sizeof(struct snull_priv));
 	spin_lock_init(&priv->lock);
@@ -654,19 +691,29 @@ void snull_init(struct net_device *dev)
 	 * Then, assign other fields in dev, using ether_setup() and some
 	 * hand assignments
 	 */
+    /*
+     * 调用ether_setup自动初始化设备的其他字段
+     */
 	ether_setup(dev); /* assign some of the fields */
 
 	dev->watchdog_timeo = timeout;
+
+    // 如果使用NAPI，就注册NAPI函数snull_poll
+    // 保存NAPI数据机构到priv私有数据结构
 	if (use_napi) {
 		netif_napi_add(dev, &priv->napi, snull_poll, 2);
 	}
 
 	/* keep the default flags, just add NOARP */
+    // 设置网络设备特性，不支持ARP协议
 	dev->flags           |= IFF_NOARP;
 	dev->features        |= NETIF_F_HW_CSUM;
+
+    // 设置网络设备的操作函数集合为snull_netdev_ops
 	dev->netdev_ops = &snull_netdev_ops;
 	dev->header_ops = &snull_header_ops;
 
+    // 启用接收中断
 	snull_rx_ints(dev, 1);		/* enable receive interrupts */
 	snull_setup_pool(dev);
 }
@@ -699,14 +746,21 @@ void snull_cleanup(void)
 
 
 
-
+/*
+ * 模块初始化函数
+ */
 int snull_init_module(void)
 {
 	int result, i, ret = -ENOMEM;
 
+    // 根据insmod传递的参数，决定是否启用NAPI
+    // 如果启用则中断处理函数为snull_napi_interrutp，否则为snull_regular_interrupt
+    // 并赋值给snull_interrupt
 	snull_interrupt = use_napi ? snull_napi_interrupt : snull_regular_interrupt;
 
 	/* Allocate the devices */
+    // 分配网络设备和私有数据结构的内存，并指定初始化函数为snull_init
+    // 网络设备的名字为sn0和sn1
 	snull_devs[0] = alloc_netdev(sizeof(struct snull_priv), "sn%d", NET_NAME_UNKNOWN,
 			snull_init);
 	snull_devs[1] = alloc_netdev(sizeof(struct snull_priv), "sn%d", NET_NAME_UNKNOWN,
@@ -714,6 +768,7 @@ int snull_init_module(void)
 	if (snull_devs[0] == NULL || snull_devs[1] == NULL)
 		goto out;
 
+    // 注册网络设备，注册时会调用snull_init函数
 	ret = -ENODEV;
 	for (i = 0; i < 2;  i++)
 		if ((result = register_netdev(snull_devs[i])))
