@@ -444,6 +444,9 @@ static void snull_napi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 /*
  * Transmit a packet (low level interface)
  */
+/*
+ * 发送一个数据包
+ */
 static void snull_hw_tx(char *buf, int len, struct net_device *dev)
 {
 	/*
@@ -452,6 +455,11 @@ static void snull_hw_tx(char *buf, int len, struct net_device *dev)
 	 * In other words, this function implements the snull behaviour,
 	 * while all other procedures are rather device-independent
 	 */
+    /*
+     * 这个函数处理硬件相关的细节
+     * 此接口将数据包返回到其他的snull接口(如果存在)
+     * 换句话说，这个函数实现了snull的行为，虽然其他程序处理时是设备相关的
+     */
 	struct iphdr *ih;
 	struct net_device *dest;
 	struct snull_priv *priv;
@@ -459,12 +467,14 @@ static void snull_hw_tx(char *buf, int len, struct net_device *dev)
 	struct snull_packet *tx_buffer;
     
 	/* I am paranoid. Ain't I? */
+    // 如果数据长度小于以太网头部加IP协议头部，则数据包过小
 	if (len < sizeof(struct ethhdr) + sizeof(struct iphdr)) {
 		printk("snull: Hmm... packet too short (%i octets)\n",
 				len);
 		return;
 	}
 
+    // 启用这个条件可以查看数据包
 	if (0) { /* enable this conditional to look at the data */
 		int i;
 		PDEBUG("len is %i\n" KERN_DEBUG "data:",len);
