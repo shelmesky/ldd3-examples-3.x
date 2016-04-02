@@ -486,13 +486,17 @@ static void snull_hw_tx(char *buf, int len, struct net_device *dev)
 	 * Ethhdr is 14 bytes, but the kernel arranges for iphdr
 	 * to be aligned (i.e., ethhdr is unaligned)
 	 */
+    // 获取待传输skb的IP源地址和目的地址
 	ih = (struct iphdr *)(buf+sizeof(struct ethhdr));
 	saddr = &ih->saddr;
 	daddr = &ih->daddr;
 
+    // 如果是子网0就变为子网1
+    // 是子网1则变为子网0
 	((u8 *)saddr)[2] ^= 1; /* change the third octet (class C) */
 	((u8 *)daddr)[2] ^= 1;
 
+    // 因为修改了源和目标地址，需要重新计算IP校验和
 	ih->check = 0;         /* and rebuild the checksum (ip needs it) */
 	ih->check = ip_fast_csum((unsigned char *)ih,ih->ihl);
 
@@ -510,17 +514,29 @@ static void snull_hw_tx(char *buf, int len, struct net_device *dev)
 	 * receive interrupt on the twin device, then  a
 	 * transmission-done on the transmitting device
 	 */
+    /*
+     * 现在准备开始传输数据包:
+     * 首先在目标网卡设备上模拟一个接收中断，
+     * 接着在当前设备上模拟一个传输完毕的中断。
+     */
+    // 选择目标网卡设备
 	dest = snull_devs[dev == snull_devs[0] ? 1 : 0];
 	priv = netdev_priv(dest);
+    // 从目标网卡设备上的数据包池中获取一个skb缓存
 	tx_buffer = snull_get_tx_buffer(dev);
 	tx_buffer->datalen = len;
+    // 将数据包中的数据复制到sbk
 	memcpy(tx_buffer->data, buf, len);
+    // 将sbk添加到目标网卡的接收队列上
+    // 此接收队列是模拟真实硬件的行为
 	snull_enqueue_buf(dest, tx_buffer);
+    // 如果目标设备启用了接收中断，则在目标设备上模拟接收中断
 	if (priv->rx_int_enabled) {
 		priv->status |= SNULL_RX_INTR;
 		snull_interrupt(0, dest, NULL);
 	}
 
+    // 在当前设备上模拟发送完毕的中断
 	priv = netdev_priv(dev);
 	priv->tx_packetlen = len;
 	priv->tx_packetdata = buf;
