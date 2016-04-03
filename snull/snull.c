@@ -85,18 +85,37 @@ module_param(pool_size, int, 0);
  * This structure is private to each device. It is used to pass
  * packets in and out, so there is place for a packet
  */
+/*
+ * 每个设备私有的数据结构。
+ * 用来处理输入和输出的数据包
+ */
 
 struct snull_priv {
+    // 所属网络设备
 	struct net_device *dev;
+    // NAPI结构体
 	struct napi_struct napi;
+    // 网络设备状态
 	struct net_device_stats stats;
+    // 私有状态字段
 	int status;
+    // 数据包缓存池
 	struct snull_packet *ppool;
+    // 数据包输入队列
 	struct snull_packet *rx_queue;  /* List of incoming packets */
+    // 指示接收中断是否开启
 	int rx_int_enabled;
+
+
+    /* 下面3个字段用来临时保存每一次接收到的skb */
+    // skb的长度
 	int tx_packetlen;
+    // skb中的数据
 	u8 *tx_packetdata;
+    // skb本身
 	struct sk_buff *skb;
+
+    // 自旋锁
 	spinlock_t lock;
 };
 
@@ -107,7 +126,7 @@ static void (*snull_interrupt)(int, void *, struct pt_regs *);
  * Set up a device's packet pool.
  */
 /*
- * 创建一个每设备相关的数据包池
+ * 创建一个每设备相关的数据包缓存池
  */
 void snull_setup_pool(struct net_device *dev)
 {
@@ -308,6 +327,12 @@ void snull_rx(struct net_device *dev, struct snull_packet *pkt)
 /*
  * The poll implementation.
  */
+/*
+ * NAPI的poll实现
+ * 通过下面的函数注册:
+ * netif_napi_add(dev, &priv->napi, snull_poll, 2);
+ */
+
 static int snull_poll(struct napi_struct *napi, int budget)
 {
 	int npackets = 0;
@@ -318,6 +343,13 @@ static int snull_poll(struct napi_struct *napi, int budget)
     
 	priv = container_of(napi, struct snull_priv, napi);
 	dev = priv->dev;
+
+    /*
+     * 循环从priv->rx_queue中取得sbk，
+     * 接着申请一个skb，
+     * 再将从接收队列中取得的数据包复制到skb，
+     * 最后调用netif_receive_skb交给网络层处理
+     */
 	while (npackets < budget && priv->rx_queue) {
 		pkt = snull_dequeue_buf(dev);
 		skb = dev_alloc_skb(pkt->datalen + 2);
@@ -331,17 +363,22 @@ static int snull_poll(struct napi_struct *napi, int budget)
 		skb_reserve(skb, 2); /* align IP on 16B boundary */  
 		memcpy(skb_put(skb, pkt->datalen), pkt->data, pkt->datalen);
 		skb->dev = dev;
-		skb->protocol = eth_type_trans(skb, dev);
+		skb->protocol = eth_type_trans(skb, dev); /* 去除链路层头部 */
 		skb->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
+        // 交由上层上层协议栈处理
 		netif_receive_skb(skb);
 		
         	/* Maintain stats */
+        // 维护状态数据
 		npackets++;
 		priv->stats.rx_packets++;
 		priv->stats.rx_bytes += pkt->datalen;
+        // 将pkt归还到数据包缓存池
 		snull_release_buffer(pkt);
 	}
 	/* If we processed all packets, we're done; tell the kernel and reenable ints */
+    // 如果处理完所有待处理的数据包，则告诉内核本次poll操作完成
+    // 并打开接收中断
 	if (! priv->rx_queue) {
 		napi_complete(napi);
 		snull_rx_ints(dev, 1);
@@ -420,6 +457,9 @@ static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 /*
  * A NAPI interrupt handler.
  */
+/*
+ * NAPI中断处理函数
+ */
 static void snull_napi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
 	int statusword;
@@ -443,10 +483,14 @@ static void snull_napi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	/* retrieve statusword: real netdevices use I/O instructions */
 	statusword = priv->status;
 	priv->status = 0;
+    // 接收中断
 	if (statusword & SNULL_RX_INTR) {
+        // 禁止接收中断
 		snull_rx_ints(dev, 0);  /* Disable further interrupts */
+        // 启动软中断
 		napi_schedule(&priv->napi);
 	}
+    // 发送完毕中断: 维护状态字段并释放skb
 	if (statusword & SNULL_TX_INTR) {
         	/* a transmission is over: free the skb */
 		priv->stats.tx_packets++;
