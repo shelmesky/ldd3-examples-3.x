@@ -297,6 +297,8 @@ void snull_rx(struct net_device *dev, struct snull_packet *pkt)
 	skb->ip_summed = CHECKSUM_UNNECESSARY; /* don't check it */
 	priv->stats.rx_packets++;
 	priv->stats.rx_bytes += pkt->datalen;
+    // 将skb放在软中断的输入队列: input_pkt_queue
+    // 并启动接收软中断，到这里中断上半部处理结束
 	netif_rx(skb);
   out:
 	return;
@@ -352,6 +354,9 @@ static int snull_poll(struct napi_struct *napi, int budget)
 /*
  * The typical interrupt entry point
  */
+/*
+ * 经典中断入口
+ */
 static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
 	int statusword;
@@ -362,8 +367,16 @@ static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	 * really interrupting.
 	 * Then assign "struct device *dev"
 	 */
+    /*
+     * 通常需要检查设备指针是否属于当前设备的，
+     * 用来确认是否真的发生中断。
+     */
 	struct net_device *dev = (struct net_device *)dev_id;
 	/* ... and check with hw if it's really ours */
+    /* 
+     * 由于在真实硬件上存在共享中断的机制，
+     * 实际中需要检查硬件的寄存器是否发生中断。
+     */
 
 	/* paranoid */
 	if (!dev)
@@ -374,8 +387,12 @@ static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	spin_lock(&priv->lock);
 
 	/* retrieve statusword: real netdevices use I/O instructions */
+    /* 获取状态字段，真实的硬件中使用IO指令从硬件中取得*/
 	statusword = priv->status;
 	priv->status = 0;
+    // 如果是接收中断，则从设备的私有数据结构中的接收队列获取一个数据包 
+    // 因为此接收队列是snull_hw_tx保存的
+    // 最后调用snull_rx将数据包传输给上层协议栈处理
 	if (statusword & SNULL_RX_INTR) {
 		/* send it to snull_rx for handling */
 		pkt = priv->rx_queue;
@@ -384,6 +401,8 @@ static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 			snull_rx(dev, pkt);
 		}
 	}
+    // 如果是发送完毕的中断
+    // 则增加统计数据并释放之前发送时保存的sbk
 	if (statusword & SNULL_TX_INTR) {
 		/* a transmission is over: free the skb */
 		priv->stats.tx_packets++;
@@ -393,6 +412,7 @@ static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 	/* Unlock the device and we are done */
 	spin_unlock(&priv->lock);
+    // 将pkt保存到设备的数据包池中，供下次使用
 	if (pkt) snull_release_buffer(pkt); /* Do this outside the lock! */
 	return;
 }
