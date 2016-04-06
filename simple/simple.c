@@ -29,12 +29,58 @@
 #include <asm/page.h>
 #include <linux/cdev.h>
 
+
+#include <linux/miscdevice.h>
+#include <linux/vmalloc.h>
+#include <linux/mman.h>
+#include <linux/random.h>
+#include <linux/init.h>
+#include <linux/raw.h>
+#include <linux/tty.h>
+#include <linux/capability.h>
+#include <linux/ptrace.h>
+#include <linux/highmem.h>
+#include <linux/backing-dev.h>
+#include <linux/splice.h>
+#include <linux/pfn.h>
+#include <linux/export.h>
+#include <linux/io.h>
+#include <linux/uio.h>
+
+#include <linux/uaccess.h>
 #include <linux/device.h>
 
 static int simple_major = 0;
 module_param(simple_major, int, 0);
 MODULE_AUTHOR("Jonathan Corbet");
 MODULE_LICENSE("Dual BSD/GPL");
+
+static int valid_mmap_phys_addr_range(unsigned long pfn, size_t size)
+{
+    return 1;
+}
+
+static int private_mapping_ok(struct vm_area_struct *vma)
+{
+    return vma->vm_flags & VM_MAYSHARE;
+}
+
+static int range_is_allowed(unsigned long pfn, unsigned long size)
+{
+    return 1;
+}
+
+int __weak phys_mem_access_prot_allowed(struct file *file,
+    unsigned long pfn, unsigned long size, pgprot_t *vma_prot)
+{
+    return 1;
+}
+
+pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
+                     unsigned long size, pgprot_t vma_prot)
+{
+    return vma_prot;
+}
 
 /*
  * Open the device; in fact, there's nothing to do here.
@@ -52,8 +98,6 @@ static int simple_release(struct inode *inode, struct file *filp)
 {
 	return 0;
 }
-
-
 
 /*
  * Common VMA ops.
@@ -102,13 +146,38 @@ static struct vm_operations_struct simple_remap_vm_ops = {
 
 static int simple_remap_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
-			    vma->vm_end - vma->vm_start,
-			    vma->vm_page_prot))
-		return -EAGAIN;
+    size_t size;
+    size = vma->vm_end - vma->vm_start;
+    printk (KERN_NOTICE "########### CALL remap_mmap");
 
+    if (!valid_mmap_phys_addr_range(vma->vm_pgoff, size))
+        return -EINVAL;
+
+    if (!private_mapping_ok(vma))
+        return -ENOSYS;
+
+    if (!range_is_allowed(vma->vm_pgoff, size))
+        return -EPERM;
+
+    if (!phys_mem_access_prot_allowed(filp, vma->vm_pgoff, size,
+                        &vma->vm_page_prot))
+        return -EINVAL;
+
+    vma->vm_page_prot = phys_mem_access_prot(filp, vma->vm_pgoff,
+                         size,
+                         vma->vm_page_prot);
+
+    /* Remap-pfn-range will mark the range VM_IO */
+    if (remap_pfn_range(vma,
+                vma->vm_start,
+                vma->vm_pgoff,
+                size,
+                vma->vm_page_prot)) {
+        return -EAGAIN;
+    }
 	vma->vm_ops = &simple_remap_vm_ops;
 	simple_vma_open(vma);
+
 	return 0;
 }
 
@@ -129,10 +198,13 @@ static int simple_remap_mmap(struct file *filp, struct vm_area_struct *vma)
  * 和上面的remap的行为一直，都是直接映射虚拟地址对应的物理地址。
  * 和/dev/mem一致。
  */
+
 int simple_vma_fault(struct vm_area_struct *vma,
                 struct vm_fault *vmf)
 {
-	struct page *pageptr;
+    printk (KERN_NOTICE "########### CALL fault_mmap");
+
+    struct page *pageptr;
     // 得到起始物理地址保存在offset中
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
     // 得到vmf->virtual_address对应的物理地址，保存在physaddr中
@@ -154,6 +226,7 @@ int simple_vma_fault(struct vm_area_struct *vma,
 	get_page(pageptr);
         vmf->page = pageptr;
 	return 0;
+
 }
 
 static struct vm_operations_struct simple_fault_vm_ops = {
